@@ -4,6 +4,7 @@
 # prompt_screen.dart
 
 ```dart
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,7 +15,6 @@ import '../widgets/voice_command_status_inficator.dart';
 
 // Add state provider for listening state
 final isListeningProvider = StateProvider<bool>((ref) => false);
-// final isListening = StateProvider<bool>((ref) => false); 
 
 
 class PromptScreen extends ConsumerStatefulWidget {
@@ -67,7 +67,6 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
     try {
       await _recorder.startListening("open");
       ref.read(isListeningProvider.notifier).state = true;
-      // ref.read(isListening.notifier).state = true;
       final currentState = ref.read(voiceCommandProvider);
       ref.read(voiceCommandProvider.notifier).state = currentState.copyWith(
         isListening: true
@@ -89,7 +88,6 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
       debugPrint('Recording stop error: $e');
     } finally {
       ref.read(isListeningProvider.notifier).state = false;
-      // ref.read(isListening.notifier).state = false;
       final currentState = ref.read(voiceCommandProvider);
       ref.read(voiceCommandProvider.notifier).state = currentState.copyWith(
         isListening: false
@@ -217,4 +215,265 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
     }
   }
 }
+
 ```
+
+# voice_command_provider.dart
+
+
+```dart
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../domain/repositories/translation_repository.dart';
+import 'audio_recorder_provider.dart';
+import 'prompt_screen_provider.dart';
+
+class VoiceCommandState {
+  final bool isListening;
+  final String? lastCommand;
+  final String? error;
+  final bool isProcessing; 
+
+  VoiceCommandState({
+    this.isListening = false,
+    this.lastCommand,
+    this.error,
+    this.isProcessing = false,
+  });
+
+  
+  VoiceCommandState copyWith({
+    bool? isListening,
+    String? lastCommand,
+    String? error,
+    bool? isProcessing,
+  }) {
+    return VoiceCommandState(
+      isListening: isListening ?? this.isListening,
+      lastCommand: lastCommand ?? this.lastCommand,
+      error: error ?? this.error,
+      isProcessing: isProcessing ?? this.isProcessing,
+    );
+  }
+}
+
+class VoiceCommandNotifier extends StateNotifier<VoiceCommandState> {
+  final AudioRecorder _recorder;
+  final TranslationRepository _repository;
+  final Ref _ref;
+
+  VoiceCommandNotifier(this._recorder, this._repository, this._ref)
+      : super(VoiceCommandState());
+
+  Future<void> processVoiceCommand(String command) async {
+    try {
+      final commandLower = command.toLowerCase();
+      
+      if (commandLower == "open") {
+        // First update prompt screen state
+        _ref.read(promptScreenProvider.notifier).setListening(true);
+        
+        // Start recording first
+        try {
+          await _recorder.startListening(command);
+          // Only update state after successful start of listening
+          state = state.copyWith(
+            isListening: true,
+            lastCommand: command,
+            isProcessing: false
+          );
+        } catch (e) {
+          // If recording fails, update both states accordingly
+          _ref.read(promptScreenProvider.notifier).setListening(false);
+          state = state.copyWith(
+            isListening: false,
+            error: e.toString(),
+            isProcessing: false
+          );
+          throw e; // Re-throw to be caught by outer try-catch
+        }
+      } else if (commandLower == "stop") {
+        if (state.isListening) {
+          try {
+            final audioPath = await _recorder.stopListening();
+            _ref.read(promptScreenProvider.notifier).setListening(false);
+            
+            if (audioPath != null) {
+              state = state.copyWith(isProcessing: true);
+              final text = await _repository.processAudioInput(audioPath);
+              _ref.read(promptScreenProvider.notifier).updateText(text);
+              
+              state = state.copyWith(
+                isListening: false,
+                lastCommand: text,
+                isProcessing: false
+              );
+            } else {
+              state = state.copyWith(
+                isListening: false,
+                error: "Failed to get audio path",
+                isProcessing: false
+              );
+            }
+          } catch (e) {
+            state = state.copyWith(
+              isListening: false,
+              error: e.toString(),
+              isProcessing: false
+            );
+          }
+        }
+      }
+    } catch (e) {
+      state = state.copyWith(
+        isListening: false,
+        error: e.toString(),
+        isProcessing: false
+      );
+    }
+  }
+
+  Future<void> handleSpeechRecognition(String audioPath) async {
+    try {
+      final text = await _repository.processAudioInput(audioPath);
+      if (text.toLowerCase() == "open") {
+        await processVoiceCommand("open");
+      } else if (text.toLowerCase() == "stop") {
+        await processVoiceCommand("stop");
+      }
+    } catch (e) {
+      state = state.copyWith(
+        isListening: false,
+        error: e.toString(),
+        isProcessing: false
+      );
+    }
+  }
+}
+
+final voiceCommandProvider = StateNotifierProvider<VoiceCommandNotifier, VoiceCommandState>((ref) {
+  return VoiceCommandNotifier(
+    ref.watch(audioRecorderProvider),
+    ref.watch(translationRepositoryProvider),
+    ref,
+  );
+});
+
+```
+
+
+# audio_recorder_provider.dart
+
+```dart
+
+
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+// Add state provider for listening state
+final isListeningProvider = StateProvider<bool>((ref) => false);
+
+final audioRecorderProvider = Provider<AudioRecorder>((ref) => AudioRecorder(ref));
+
+class AudioRecorder {
+  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
+  bool _isInitialized = false;
+  String? _path;
+  final Ref _ref;
+
+  AudioRecorder(this._ref);
+
+  bool get isListening => _ref.read(isListeningProvider);
+
+  Future<void> init() async {
+    if (!_isInitialized) {
+      final status = await Permission.microphone.request();
+      if (status != PermissionStatus.granted) {
+        throw RecordingPermissionException('Microphone permission not granted');
+      }
+      await _recorder.openRecorder();
+      _isInitialized = true;
+    }
+  }
+
+  Future<void> startListening(String command) async {
+    if (!_isInitialized) await init();
+    
+    if (command.toLowerCase() == "open") {
+      try {
+        final dir = await getTemporaryDirectory();
+        _path = '${dir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.aac';
+        await _recorder.startRecorder(
+          toFile: _path,
+          codec: Codec.aacADTS,
+        );
+        _ref.read(isListeningProvider.notifier).state = true;
+      } catch (e) {
+        debugPrint('Error starting recording: $e');
+      }
+    }
+  }
+
+  Future<String?> stopListening() async {
+    try {
+      if (_recorder.isRecording) {
+        await _recorder.stopRecorder();
+        _ref.read(isListeningProvider.notifier).state = false;
+        return _path;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Error stopping recording: $e');
+      return null;
+    }
+  }
+
+  Future<void> start() async {
+    if (!_isInitialized) await init();
+    try {
+      final dir = await getTemporaryDirectory();
+      _path = '${dir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.aac';
+      await _recorder.startRecorder(
+        toFile: _path,
+        codec: Codec.aacADTS,
+      );
+      _ref.read(isListeningProvider.notifier).state = true;
+    } catch (e) {
+      debugPrint('Error recording audio: $e');
+    }
+  }
+
+  Future<String?> stop() async {
+    try {
+      if (_recorder.isRecording) {
+        await _recorder.stopRecorder();
+        _ref.read(isListeningProvider.notifier).state = false;
+        return _path;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Error stopping recording: $e');
+      return null;
+    }
+  }
+
+  Future<bool> isRecording() async {
+    return _recorder.isRecording;
+  }
+
+  Future<void> dispose() async {
+    if (_isInitialized) {
+      await _recorder.closeRecorder();
+      _isInitialized = false;
+    }
+  }
+}
+
+```
+
+
