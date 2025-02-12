@@ -4,7 +4,6 @@
 # prompt_screen.dart
 
 ```dart
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,7 +14,6 @@ import '../widgets/voice_command_status_inficator.dart';
 
 // Add state provider for listening state
 final isListeningProvider = StateProvider<bool>((ref) => false);
-
 
 class PromptScreen extends ConsumerStatefulWidget {
   const PromptScreen({super.key});
@@ -48,39 +46,37 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
   void _handleVoiceCommand(VoiceCommandState state) {
     if (!mounted) return;
     setState(() {}); // Force UI update
-    
-    
+
     if (state.lastCommand?.toLowerCase() == "open") {
       _startVoiceRecording();
     } else if (state.lastCommand?.toLowerCase() == "stop") {
       _stopVoiceRecording();
     }
-    
+
     if (state.error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(state.error!))
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(state.error!)));
     }
   }
-  
+
   Future<void> _startVoiceRecording() async {
     try {
       await _recorder.startListening("open");
       ref.read(isListeningProvider.notifier).state = true;
       final currentState = ref.read(voiceCommandProvider);
-      ref.read(voiceCommandProvider.notifier).state = currentState.copyWith(
-        isListening: true
-      );
+      ref.read(voiceCommandProvider.notifier).state =
+          currentState.copyWith(isListening: true);
     } catch (e) {
       debugPrint('Recording start error: $e');
     }
   }
-  
+
   Future<void> _stopVoiceRecording() async {
     try {
       final path = await _recorder.stopListening();
       if (path != null) {
-        final text = await ref.read(translationRepositoryProvider)
+        final text = await ref
+            .read(translationRepositoryProvider)
             .processAudioInput(path);
         _textController.text = text;
       }
@@ -89,9 +85,8 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
     } finally {
       ref.read(isListeningProvider.notifier).state = false;
       final currentState = ref.read(voiceCommandProvider);
-      ref.read(voiceCommandProvider.notifier).state = currentState.copyWith(
-        isListening: false
-      );
+      ref.read(voiceCommandProvider.notifier).state =
+          currentState.copyWith(isListening: false);
     }
   }
 
@@ -107,13 +102,10 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
     final voiceState = ref.watch(voiceCommandProvider);
 
     // Add listener for voice commands
-    ref.listen<VoiceCommandState>(
-      voiceCommandProvider, 
-      (_, state) {
-        if (!mounted) return;
-        _handleVoiceCommand(state);
-      }
-    );
+    ref.listen<VoiceCommandState>(voiceCommandProvider, (_, state) {
+      if (!mounted) return;
+      _handleVoiceCommand(state);
+    });
 
     return Scaffold(
       backgroundColor: const Color(0xFF000000),
@@ -167,38 +159,49 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
               children: [
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () {
+                    onPressed: () async {
+                      // Make onPressed async
                       if (_textController.text.isNotEmpty) {
-                        Navigator.pushNamed(
-                          context,
-                          '/conversation',
-                          arguments: _textController.text,
-                        ).then((_) => _textController.clear());
+                        // Play sound before navigation
+                        await ref
+                            .read(translationRepositoryProvider)
+                            .playUISound('start_conversation');
+
+                        // Navigate after sound plays
+                        if (mounted) {
+                          // Check if widget is still mounted
+                          Navigator.pushNamed(
+                            context,
+                            '/conversation',
+                            arguments: _textController.text,
+                          ).then((_) => _textController.clear());
+                        }
                       }
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color.fromARGB(255, 61, 62, 63),
                       minimumSize: const Size(double.infinity, 50),
                     ),
-                    child: const Text('start conversation', 
+                    child: const Text('start conversation',
                         style: TextStyle(color: Colors.white)),
                   ),
                 ),
                 const SizedBox(width: 16),
                 Consumer(
-                builder: (context, ref, child) {
-                  final voiceState = ref.watch(voiceCommandProvider);
-                  return ElevatedButton(
-                    onPressed: () => _toggleRecording(voiceState.isListening),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: voiceState.isListening ? Colors.red : Colors.white,
-                      shape: const CircleBorder(),
-                      padding: const EdgeInsets.all(16),
-                    ),
-                    child: const Icon(Icons.mic, size: 28),
-                  );
-                },
-              ),
+                  builder: (context, ref, child) {
+                    final voiceState = ref.watch(voiceCommandProvider);
+                    return ElevatedButton(
+                      onPressed: () => _toggleRecording(voiceState.isListening),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            voiceState.isListening ? Colors.red : Colors.white,
+                        shape: const CircleBorder(),
+                        padding: const EdgeInsets.all(16),
+                      ),
+                      child: const Icon(Icons.mic, size: 28),
+                    );
+                  },
+                ),
               ],
             ),
           ],
@@ -209,12 +212,17 @@ class _PromptScreenState extends ConsumerState<PromptScreen> {
 
   Future<void> _toggleRecording(bool isCurrentlyListening) async {
     if (isCurrentlyListening) {
+      // Play sound before stopping
+      await ref.read(translationRepositoryProvider).playUISound('mic_off');
       await _stopVoiceRecording();
     } else {
+      // Play sound before starting
+      await ref.read(translationRepositoryProvider).playUISound('mic_on');
       await _startVoiceRecording();
     }
   }
 }
+
 
 ```
 
@@ -369,13 +377,13 @@ final voiceCommandProvider = StateNotifierProvider<VoiceCommandNotifier, VoiceCo
 
 
 
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// Add state provider for listening state
 final isListeningProvider = StateProvider<bool>((ref) => false);
 
 final audioRecorderProvider = Provider<AudioRecorder>((ref) => AudioRecorder(ref));
@@ -473,6 +481,7 @@ class AudioRecorder {
     }
   }
 }
+
 
 ```
 
